@@ -2,7 +2,7 @@
 
 <h1>BiliVoice</h1>
 
-> 一款基于 FastAPI + Next.js 的 B 站直播弹幕桌面应用，支持与 GPT-SoVITS WebUI 对接实现弹幕语音播报。
+> 一款基于 FastAPI + Next.js 的 B 站直播弹幕桌面应用，支持与 GPT-SoVITS Gradio WebUI 或 api_v2 对接实现弹幕语音播报。
 
   <em>轻量、易用，开箱即用的直播间消息可视化与语音播报工具。</em>
   <br/>
@@ -23,7 +23,7 @@ BiliVoice 是一个桌面化（内置 WebView）的小工具，用于播报 B �
 - 支持扫码登录 / 短信登录 / 密码登录（带极验流程）。
 - 支持选择播报的消息类型与文本模板自定义。
 - 内置 TTS 队列与优先级（如 SC/礼物消息优先播报），并支持音量增益与文本替换规则。
-- 一键对接 GPT-SoVITS WebUI，可选自动启动外部 WebUI。
+- 可明确选择 GPT-SoVITS Gradio WebUI 或 api_v2，并自动启动所选服务。
 - 前端使用 Next.js 静态导出，由后端 FastAPI 直接托管，开箱即用。
 
 > **注意**：本项目仅提供语音合成与播放功能，**不包含模型训练部分**。如需训练自定义语音模型，请参考[GPT-SoVITS 官方仓库](https://github.com/RVC-Boss/GPT-SoVITS)和[GPT-SoVITS 官方文档](https://github.com/RVC-Boss/GPT-SoVITS/blob/main/docs/README_zh.md)。
@@ -65,7 +65,7 @@ bili_voice/
 - Python 3.12（建议使用 conda 环境）
 - Node.js 18+（用于构建前端）
 - FFmpeg（用于多媒体处理）
-- 已安装的 GPT-SoVITS WebUI
+- 已安装的 GPT-SoVITS
 
 ### 安装步骤
 
@@ -120,9 +120,10 @@ python run.py
 - `tts_volume`：音量增益（dB，建议 -30 到 +12）。
 - `replacement_rules`：文本替换规则。
 - `max_tts_queue_size`：服务端 TTS 队列长度上限（含优先级队列）。
-- `gradio_server_url`：GPT-SoVITS WebUI 地址（示例 `http://localhost:9872/`）。
-- `sovits_root_path`：GPT-SoVITS 根目录（用于自动启动，需包含 `runtime/python.exe` 与 `GPT_SoVITS/`）。
-- `autostart_sovits`：启用后，启动本应用且健康检查未通过时，自动尝试启动外部 WebUI。
+- `tts_backend`：GPT-SoVITS 启动与调用方式，可选 `gradio` 或 `api_v2`。
+- `gradio_server_url`：所选 GPT-SoVITS 服务的地址。Gradio 通常为 `http://localhost:9872/`，api_v2 通常为 `http://localhost:9880/`。
+- `sovits_root_path`：GPT-SoVITS 根目录（用于自动启动，需包含 `runtime/python.exe`）。
+- `autostart_sovits`：启用后，健康检查未通过时会按 `tts_backend` 启动服务：`gradio` 启动 `GPT_SoVITS/inference_webui_fast.py`，`api_v2` 启动根目录 `api_v2.py`。
 - `sovits_model` / `gpt_model` / `text_lang` / 采样参数：与 WebUI 一致，用于服务端选择权重与推理参数。
 - `template_*`：各类消息的文案模板，例如普通弹幕、礼物、舰长、SC、进场、关注、分享、点赞等。
 
@@ -133,7 +134,7 @@ python run.py
 ## ❓ 常见问题
 
 - TTS 未播放或报健康检查失败：
-  - 检查 `gradio_server_url` 是否可访问；如启用了自动启动，确认 `sovits_root_path` 配置正确。
+  - 检查 `tts_backend` 与实际服务类型是否一致，并确认 `gradio_server_url` 可访问。api_v2 的手动启动命令为 `runtime/python.exe api_v2.py`。如启用了自动启动，确认 `sovits_root_path` 配置正确。
 
 ---
 

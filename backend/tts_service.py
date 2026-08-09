@@ -29,6 +29,86 @@ class Priority(enum.IntEnum):
     NORMAL = 1
 
 
+class TTSBackend(str, enum.Enum):
+    GRADIO = "gradio"
+    API_V2 = "api_v2"
+
+
+_API_V2_LANGUAGE_MAP = {
+    "中文": "all_zh",
+    "英文": "en",
+    "日文": "all_ja",
+    "粤语": "all_yue",
+    "韩文": "all_ko",
+    "中英混合": "zh",
+    "日英混合": "ja",
+    "粤英混合": "yue",
+    "韩英混合": "ko",
+    "多语种混合": "auto",
+    "多语种混合(粤语)": "auto_yue",
+    "all_zh": "all_zh",
+    "all_ja": "all_ja",
+    "all_yue": "all_yue",
+    "all_ko": "all_ko",
+}
+
+_API_V2_SPLIT_METHOD_MAP = {
+    "不切": "cut0",
+    "凑四句一切": "cut1",
+    "凑50字一切": "cut2",
+    "按中文句号。切": "cut3",
+    "按英文句号.切": "cut4",
+    "按标点符号切": "cut5",
+}
+
+
+def _normalize_base_url(base_url: str) -> str:
+    return (base_url or "").strip().rstrip("/") + "/"
+
+
+def normalize_tts_backend(value: str) -> TTSBackend:
+    if (value or "").strip().lower() == TTSBackend.API_V2.value:
+        return TTSBackend.API_V2
+    return TTSBackend.GRADIO
+
+
+def _api_v2_language(value: str) -> str:
+    raw = (value or "").strip()
+    return _API_V2_LANGUAGE_MAP.get(raw, raw.lower() or "zh")
+
+
+def _api_v2_split_method(value: str) -> str:
+    raw = (value or "").strip()
+    return _API_V2_SPLIT_METHOD_MAP.get(raw, raw or "cut0")
+
+
+def _build_api_v2_payload(settings: Settings, text: str, ref_text: str) -> Dict[str, Any]:
+    prompt_text = "" if bool(settings.ref_text_free) else ref_text
+    seed = -1 if bool(settings.keep_random) else int(settings.seed)
+    return {
+        "text": text,
+        "text_lang": _api_v2_language(settings.text_lang),
+        "ref_audio_path": (settings.ref_audio_path or "").strip(),
+        "prompt_text": prompt_text,
+        "prompt_lang": _api_v2_language(settings.text_lang),
+        "top_k": int(settings.top_k),
+        "top_p": float(settings.top_p),
+        "temperature": float(settings.temperature),
+        "text_split_method": _api_v2_split_method(settings.text_split_method),
+        "batch_size": int(settings.batch_size),
+        "speed_factor": float(settings.speed_factor),
+        "split_bucket": bool(settings.split_bucket),
+        "fragment_interval": float(settings.fragment_interval),
+        "seed": seed,
+        "media_type": "wav",
+        "streaming_mode": False,
+        "parallel_infer": bool(settings.parallel_infer),
+        "repetition_penalty": float(settings.repetition_penalty),
+        "sample_steps": int(settings.sample_steps),
+        "super_sampling": bool(settings.super_sampling),
+    }
+
+
 @dataclasses.dataclass
 class TtsTask:
     text: str
@@ -216,6 +296,85 @@ class GradioClient:
             return j.get("data")
 
 
+async def check_tts_backend(
+    base_url: str,
+    backend: TTSBackend,
+    timeout_seconds: float = 5.0,
+) -> None:
+    base = (base_url or "").strip()
+    if not base:
+        raise RuntimeError("未配置 TTS 服务地址")
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        path = "openapi.json" if backend == TTSBackend.API_V2 else "config"
+        async with session.get(_normalize_base_url(base) + path) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(f"{backend.value} {path}: HTTP {resp.status} {body[:120]}")
+            data = await resp.json(content_type=None)
+
+    if backend == TTSBackend.API_V2:
+        paths = data.get("paths") if isinstance(data, dict) else None
+        if not isinstance(paths, dict) or "/tts" not in paths:
+            raise RuntimeError("api_v2 openapi.json 中未发现 /tts")
+    elif not isinstance(data, dict) or not isinstance(data.get("dependencies"), list):
+        raise RuntimeError("Gradio config 响应格式无效")
+
+
+class APIv2Client:
+    def __init__(self, base_url: str, ssl_verify: bool = False, timeout: int = 300):
+        self.base_url = _normalize_base_url(base_url)
+        self.ssl_verify = ssl_verify
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def ensure(self):
+        if self._session is None:
+            connector = aiohttp.TCPConnector(ssl=self.ssl_verify)
+            self._session = aiohttp.ClientSession(
+                timeout=self.timeout,
+                connector=connector,
+                headers={"User-Agent": "bili_voice/tts_service"},
+            )
+
+    async def close(self):
+        if self._session is not None:
+            session = self._session
+            self._session = None
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+    async def _set_weights(self, endpoint: str, weights_path: str):
+        path = (weights_path or "").strip()
+        if not path:
+            return
+        await self.ensure()
+        assert self._session is not None
+        async with self._session.get(self.base_url + endpoint, params={"weights_path": path}) as resp:
+            body = await resp.text()
+            if resp.status != 200:
+                raise RuntimeError(f"api_v2 {endpoint} failed: HTTP {resp.status} {body[:200]}")
+
+    async def select_models(self, sovits_model: str, gpt_model: str):
+        await self._set_weights("set_sovits_weights", sovits_model)
+        await self._set_weights("set_gpt_weights", gpt_model)
+
+    async def synthesize(self, payload: Dict[str, Any]) -> bytes:
+        await self.ensure()
+        assert self._session is not None
+        async with self._session.post(self.base_url + "tts", json=payload) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(f"api_v2 /tts failed: HTTP {resp.status} {body[:300]}")
+            data = await resp.read()
+            if not data:
+                raise RuntimeError("api_v2 /tts returned empty audio")
+            return data
+
+
 class TTSService:
     def __init__(self) -> None:
         self._cfg: Optional[Settings] = None
@@ -321,37 +480,74 @@ class TTSService:
 
     def _predict_worker(self):
         logger.info("TTS predict worker started")
-        client: Optional[GradioClient] = None
-        selected_sig: Optional[Tuple[str, str, str, str]] = None  # (base, sovits, gpt, text_lang)
+        gradio_client: Optional[GradioClient] = None
+        api_v2_client: Optional[APIv2Client] = None
+        active_backend: Optional[TTSBackend] = None
+        active_base: Optional[str] = None
+        selected_sig: Optional[Tuple[str, str, str, str, str]] = None
+
+        async def _close_clients():
+            nonlocal gradio_client, api_v2_client
+            if gradio_client is not None:
+                await gradio_client.close()
+                gradio_client = None
+            if api_v2_client is not None:
+                await api_v2_client.close()
+                api_v2_client = None
 
         async def _ensure_and_select_models():
-            nonlocal client, selected_sig
+            nonlocal gradio_client, api_v2_client, active_backend, active_base, selected_sig
             cfg = self._cfg
             if not cfg:
                 return False
             base = (cfg.gradio_server_url or "").strip()
             if not base:
-                logger.warning("Gradio server URL not set; waiting...")
+                logger.warning("TTS server URL not set; waiting...")
                 return False
-            # (re)create client when base changes
-            if client is None or (isinstance(client, GradioClient) and client.base_url.rstrip("/") != (base if base.endswith("/") else (base + "/")).rstrip("/")):
-                client = GradioClient(base, ssl_verify=False)
-                selected_sig = None
             try:
-                # Select weights only when signature changed
-                sig = (base, str(cfg.sovits_model), str(cfg.gpt_model), str(cfg.text_lang))
+                normalized_base = _normalize_base_url(base)
+                configured_backend = normalize_tts_backend(getattr(cfg, "tts_backend", "gradio"))
+                if active_backend != configured_backend or active_base != normalized_base:
+                    await _close_clients()
+                    active_backend = configured_backend
+                    active_base = normalized_base
+                    selected_sig = None
+                    if active_backend == TTSBackend.GRADIO:
+                        gradio_client = GradioClient(base, ssl_verify=False)
+                    else:
+                        api_v2_client = APIv2Client(base, ssl_verify=False)
+                    logger.info("Configured TTS backend: %s at %s", active_backend.value, base)
+
+                sig = (
+                    active_backend.value,
+                    normalized_base,
+                    str(cfg.sovits_model),
+                    str(cfg.gpt_model),
+                    str(cfg.text_lang),
+                )
                 if selected_sig != sig:
-                    result = await client.predict("/change_sovits_weights", cfg.sovits_model, cfg.text_lang, cfg.text_lang)
-                    logger.info("Changed SoVITS weights: %s", result)
-                    result = await client.predict("/change_gpt_weights", cfg.gpt_model)
-                    logger.info("Changed GPT weights: %s", result)
+                    if active_backend == TTSBackend.GRADIO:
+                        assert gradio_client is not None
+                        if (cfg.sovits_model or "").strip():
+                            result = await gradio_client.predict(
+                                "/change_sovits_weights", cfg.sovits_model, cfg.text_lang, cfg.text_lang
+                            )
+                            logger.info("Changed SoVITS weights: %s", result)
+                        if (cfg.gpt_model or "").strip():
+                            result = await gradio_client.predict("/change_gpt_weights", cfg.gpt_model)
+                            logger.info("Changed GPT weights: %s", result)
+                    else:
+                        assert api_v2_client is not None
+                        await api_v2_client.select_models(cfg.sovits_model, cfg.gpt_model)
+                        logger.info("Applied api_v2 model settings")
                     selected_sig = sig
                     self._gradio_ready.set()
                 return True
             except Exception as e:
-                logger.warning("Failed to initialize Gradio client: %s", e)
-                client.close()
-                client = None
+                logger.warning("Failed to initialize TTS client: %s", e)
+                await _close_clients()
+                active_backend = None
+                active_base = None
                 selected_sig = None
                 self._gradio_ready.clear()
                 return False
@@ -374,17 +570,8 @@ class TTSService:
 
                 cfg = self._cfg
                 assert cfg is not None
-                assert client is not None
+                assert active_backend is not None
 
-                # Build inputs
-                ref_audio_dict: Optional[Dict[str, Any]] = None
-                if isinstance(cfg.ref_audio_path, str) and cfg.ref_audio_path.strip():
-                    ref_audio_dict = {
-                        "path": cfg.ref_audio_path.strip(),
-                        "orig_name": cfg.ref_audio_path.strip().split("/")[-1],
-                        "meta": {"_type": "gradio.FileData"},
-                    }
-                # read ref text
                 ref_text = ""
                 if isinstance(cfg.ref_text_path, str) and cfg.ref_text_path.strip():
                     try:
@@ -395,60 +582,71 @@ class TTSService:
 
                 # call inference
                 logger.info("Generating TTS: %s", task.text)
-                data = loop.run_until_complete(client.predict(
-                    "/inference",
-                    task.text,  # text
-                    cfg.text_lang,  # text_lang
-                    ref_audio_dict,  # ref_audio
-                    [],  # aux_ref_audios
-                    ref_text,  # prompt_text
-                    cfg.text_lang,  # prompt_lang
-                    int(cfg.top_k),
-                    float(cfg.top_p),
-                    float(cfg.temperature),
-                    cfg.text_split_method,
-                    int(cfg.batch_size),
-                    float(cfg.speed_factor),
-                    bool(cfg.ref_text_free),
-                    bool(cfg.split_bucket),
-                    float(cfg.fragment_interval),
-                    int(cfg.seed),
-                    bool(cfg.keep_random),
-                    bool(cfg.parallel_infer),
-                    float(cfg.repetition_penalty),
-                    str(cfg.sample_steps),
-                    bool(cfg.super_sampling),
-                ))
-
-                # parse audio url
-                audio_url: Optional[str] = None
-                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                    audio_url = data[0].get("url")
-                elif isinstance(data, list) and len(data) > 0:
-                    try:
-                        for sublist in data[0]:
-                            if (isinstance(sublist, list) and len(sublist) >= 3 and
-                                isinstance(sublist[1], list) and len(sublist[1]) > 0 and
-                                sublist[1][0] == "url"):
-                                audio_url = sublist[2]
-                                break
-                    except Exception:
-                        pass
-                if not audio_url:
-                    logger.error("Unexpected inference result: %s", repr(data)[:200])
-                    continue
-
-                # download audio
-                async def _download(url: str) -> bytes:
-                    assert client is not None
-                    assert client._session is not None
-                    async with client._session.get(url) as resp:
-                        resp.raise_for_status()
-                        return await resp.read()
-
                 start = time.time()
-                buf = loop.run_until_complete(_download(audio_url))
-                logger.info("Downloaded audio %.1f KB in %.2fs", len(buf) / 1024, time.time() - start)
+                if active_backend == TTSBackend.GRADIO:
+                    assert gradio_client is not None
+                    ref_audio_dict: Optional[Dict[str, Any]] = None
+                    if isinstance(cfg.ref_audio_path, str) and cfg.ref_audio_path.strip():
+                        ref_audio_dict = {
+                            "path": cfg.ref_audio_path.strip(),
+                            "orig_name": cfg.ref_audio_path.strip().replace("\\", "/").split("/")[-1],
+                            "meta": {"_type": "gradio.FileData"},
+                        }
+                    data = loop.run_until_complete(gradio_client.predict(
+                        "/inference",
+                        task.text,
+                        cfg.text_lang,
+                        ref_audio_dict,
+                        [],
+                        ref_text,
+                        cfg.text_lang,
+                        int(cfg.top_k),
+                        float(cfg.top_p),
+                        float(cfg.temperature),
+                        cfg.text_split_method,
+                        int(cfg.batch_size),
+                        float(cfg.speed_factor),
+                        bool(cfg.ref_text_free),
+                        bool(cfg.split_bucket),
+                        float(cfg.fragment_interval),
+                        int(cfg.seed),
+                        bool(cfg.keep_random),
+                        bool(cfg.parallel_infer),
+                        float(cfg.repetition_penalty),
+                        str(cfg.sample_steps),
+                        bool(cfg.super_sampling),
+                    ))
+
+                    audio_url: Optional[str] = None
+                    if isinstance(data, list) and data and isinstance(data[0], dict):
+                        audio_url = data[0].get("url")
+                    elif isinstance(data, list) and data:
+                        try:
+                            for sublist in data[0]:
+                                if (isinstance(sublist, list) and len(sublist) >= 3 and
+                                    isinstance(sublist[1], list) and sublist[1] and
+                                    sublist[1][0] == "url"):
+                                    audio_url = sublist[2]
+                                    break
+                        except Exception:
+                            pass
+                    if not audio_url:
+                        raise RuntimeError(f"Unexpected Gradio inference result: {repr(data)[:200]}")
+
+                    async def _download(url: str) -> bytes:
+                        assert gradio_client is not None
+                        assert gradio_client._session is not None
+                        async with gradio_client._session.get(url) as resp:
+                            resp.raise_for_status()
+                            return await resp.read()
+
+                    buf = loop.run_until_complete(_download(audio_url))
+                else:
+                    assert api_v2_client is not None
+                    payload = _build_api_v2_payload(cfg, task.text, ref_text)
+                    buf = loop.run_until_complete(api_v2_client.synthesize(payload))
+
+                logger.info("Received audio %.1f KB in %.2fs", len(buf) / 1024, time.time() - start)
 
                 # load and adjust volume (treat tts_volume as dB directly)
                 audio = AudioSegment.from_file(io.BytesIO(buf))
@@ -466,6 +664,14 @@ class TTSService:
                 logger.info("Enqueued audio: %s", task.text)
             except Exception as e:
                 logger.error("Predict worker error: %s", e, exc_info=True)
+                try:
+                    loop.run_until_complete(_close_clients())
+                except Exception:
+                    pass
+                active_backend = None
+                active_base = None
+                selected_sig = None
+                self._gradio_ready.clear()
                 time.sleep(1.0)
 
     def _play_worker(self):
@@ -550,42 +756,19 @@ def priority_from_event_type(event_type: str) -> Priority:
     return Priority.NORMAL
 
 
-# ---- HTTP helper API for frontend-driven playback ----
-# These helpers let the backend talk to Gradio to generate audio bytes
-# without performing any server-side playback. They cache model selection
-# and only re-select when relevant settings change.
-
-_http_client: Optional[GradioClient] = None
-_selected_sig: Optional[Tuple[str, str, str, str]] = None  # (base_url, sovits_model, gpt_model, text_lang)
+async def tts_health(settings: Settings) -> Dict[str, Any]:
+    """Check the explicitly configured Gradio or api_v2 service."""
+    base = (settings.gradio_server_url or "").strip()
+    if not base:
+        return {"ok": False, "ready": False, "url": base, "message": "未配置 TTS 服务地址"}
+    backend = normalize_tts_backend(getattr(settings, "tts_backend", "gradio"))
+    try:
+        await check_tts_backend(base, backend)
+        return {"ok": True, "ready": True, "url": base, "backend": backend.value}
+    except Exception as e:
+        return {"ok": False, "ready": False, "url": base, "backend": backend.value, "message": str(e)}
 
 
 async def gradio_health(settings: Settings) -> Dict[str, Any]:
-    """
-    Check whether Gradio server is reachable by requesting /config.
-    Returns a JSON-serializable dict: { ok, ready, url, message? }
-    Note: This does NOT rely on cached client/session to avoid false positives.
-    """
-    base = (settings.gradio_server_url or "").strip()
-    if not base:
-        return {"ok": False, "ready": False, "url": base, "message": "未配置 WebUI 服务地址"}
-    url = (base if base.endswith("/") else (base + "/")) + "config"
-    try:
-        timeout = aiohttp.ClientTimeout(total=5)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            async with session.get(url) as resp:
-                text = await resp.text()
-                if resp.status != 200:
-                    return {"ok": False, "ready": False, "url": base, "message": f"HTTP {resp.status}: {text[:120]}"}
-        # reachable -> ok/ready true
-        return {"ok": True, "ready": True, "url": base}
-    except Exception as e:
-        # On failure, clear cached selection/client so next generate reselects
-        global _selected_sig
-        _selected_sig = None
-        try:
-            if _http_client is not None:
-                await _http_client.close()
-        except Exception:
-            pass
-        return {"ok": False, "ready": False, "url": base, "message": str(e)}
+    """Backward-compatible name used by older callers."""
+    return await tts_health(settings)

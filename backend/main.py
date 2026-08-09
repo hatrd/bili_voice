@@ -43,6 +43,13 @@ from .logs import get_logs_hub, install_log_handler
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_OUT = ROOT_DIR / "frontend" / "out"
 
+
+def _resolve_sovits_start_script(root_path: Path, backend: str) -> Path:
+    if tts_service.normalize_tts_backend(backend) == tts_service.TTSBackend.API_V2:
+        return root_path / "api_v2.py"
+    return root_path / "GPT_SoVITS" / "inference_webui_fast.py"
+
+
 app = FastAPI(title="Bilibili Danmaku Desktop Backend", version="0.1.0")
 
 # CORS (webview loads same origin typically, but enable for safety in dev)
@@ -93,18 +100,18 @@ async def _startup():
     except Exception:
         pass
 
-    # Auto-start GPT-SoVITS WebUI if configured and health check fails
+    # Auto-start the configured GPT-SoVITS service if its health check fails
     try:
         s = load_settings()
         if getattr(s, "autostart_sovits", False):
-            health = await tts_service.gradio_health(s)
+            health = await tts_service.tts_health(s)
             ok = bool(health.get("ok") and health.get("ready"))
             if not ok:
                 root = (s.sovits_root_path or "").strip()
                 if root:
                     root_path = Path(root).resolve()
                     py = root_path / "runtime" / "python.exe"
-                    script = root_path / "GPT_SoVITS" / "inference_webui_fast.py"
+                    script = _resolve_sovits_start_script(root_path, s.tts_backend)
                     if py.exists() and script.exists():
                         # Launch external process via proc_manager; it will be tied to parent lifetime
                         proc_manager.start_process([str(py), str(script)], cwd=str(root_path))
@@ -146,11 +153,14 @@ def api_save_last_room_id(last_room_id: int = Body(embed=True)):
     return CommonResponse(ok=True, message="last_room_id saved", data={"last_room_id": s.last_room_id})
 
 
-# ========== TTS (Gradio) ==========
+# ========== TTS (Gradio / api_v2) ==========
 @app.get("/api/tts/health")
-async def api_tts_health(url: str | None = Query(default=None)):
+async def api_tts_health(
+    url: str | None = Query(default=None),
+    backend: str | None = Query(default=None),
+):
     """
-    Check connectivity to GPT-SoVITS WebUI at current settings or override ?url=.
+    Check connectivity to GPT-SoVITS Gradio or api_v2 at current settings or override ?url=.
     """
     try:
         s = load_settings()
@@ -160,7 +170,12 @@ async def api_tts_health(url: str | None = Query(default=None)):
                 s.gradio_server_url = url  # type: ignore
             except Exception:
                 pass
-        result = await tts_service.gradio_health(s)
+        if backend:
+            try:
+                s.tts_backend = backend  # type: ignore
+            except Exception:
+                pass
+        result = await tts_service.tts_health(s)
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"ok": False, "ready": False, "message": str(e)}, status_code=200)

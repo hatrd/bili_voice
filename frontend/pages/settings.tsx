@@ -32,13 +32,13 @@ export default function SettingsPage() {
     api.getSettings().then(setSettings).catch((e) => setMsg(e.message || String(e)));
   }, []);
 
-  // 自动检测 Gradio 连接状态：页面加载后、以及地址变更时
+  // 自动检测 TTS 服务连接状态：页面加载后、以及地址变更时
   useEffect(() => {
     if (!settings) return;
     (async () => {
       setChecking(true);
       try {
-        const h = await api.ttsHealth(settings.gradio_server_url);
+        const h = await api.ttsHealth(settings.gradio_server_url, settings.tts_backend);
         setHealth(h);
       } catch (e: any) {
         setHealth({ ok: false, ready: false, message: e?.message || String(e) });
@@ -46,7 +46,7 @@ export default function SettingsPage() {
         setChecking(false);
       }
     })();
-  }, [settings?.gradio_server_url]);
+  }, [settings?.gradio_server_url, settings?.tts_backend]);
 
   const save = async () => {
     if (!settings) return;
@@ -77,7 +77,7 @@ export default function SettingsPage() {
   const checkHealth = async () => {
     setChecking(true);
     try {
-      const h = await api.ttsHealth(settings?.gradio_server_url);
+      const h = await api.ttsHealth(settings?.gradio_server_url, settings?.tts_backend);
       setHealth(h);
     } catch (e: any) {
       setHealth({ ok: false, ready: false, message: e?.message || String(e) });
@@ -171,25 +171,38 @@ export default function SettingsPage() {
 
           <div style={{ fontWeight: 700 }}>GPT-SoVITS 配置</div>
 
+          <div className="row">
+            <label>启动与调用方式</label>
+            <select
+              className="input"
+              value={settings.tts_backend}
+              onChange={(e) => setSettings({ ...settings, tts_backend: e.target.value as "gradio" | "api_v2" })}
+              style={{ flex: 1, minWidth: 240 }}
+            >
+              <option value="gradio">Gradio WebUI</option>
+              <option value="api_v2">api_v2</option>
+            </select>
+          </div>
+
           <div className="row" style={{ alignItems: "center", gap: 8 }}>
-            <label>WebUI 服务地址</label>
+            <label>TTS 服务地址</label>
             <input
               className="input"
               value={settings.gradio_server_url}
               onChange={(e) => setSettings({ ...settings, gradio_server_url: e.target.value })}
-              placeholder="http://localhost:9872/"
+              placeholder={settings.tts_backend === "api_v2" ? "http://localhost:9880/" : "http://localhost:9872/"}
               style={{ flex: 1, minWidth: 320 }}
             />
             <button className="button secondary" onClick={checkHealth} disabled={checking} style={{ whiteSpace: "nowrap" }}>
               {checking ? "检测中..." : "测试连接"}
             </button>
             <span className="badge" title={health?.message || ""} style={{ background: health?.ok && health?.ready ? "#204d26" : "#4d2020" }}>
-              {health ? (health.ok && health.ready ? "已连接" : "未连接") : "未知"}
+              {health ? (health.ok && health.ready ? `已连接 ${health.backend === "api_v2" ? "API v2" : "Gradio"}` : "未连接") : "未知"}
             </span>
           </div>
 
           <div className="row">
-            <label>启动时自动尝试启动 WebUI</label>
+            <label>启动时自动尝试启动 TTS 服务</label>
             <Toggle
               label=""
               checked={!!(settings as any).autostart_sovits}

@@ -46,11 +46,12 @@ class Settings(BaseModel):
     tts_max_queue: int = Field(50, description="最大语音队列长度")
     tts_voice: Optional[str] = Field(None, description="语音名称（浏览器语音合成器）")
 
-    # GPT-SoVITS WebUI 配置（参考 gpt-sovits-tts/config.py）
-    gradio_server_url: str = Field("http://localhost:9872/", description="WebUI 服务地址")
+    # GPT-SoVITS 服务配置；保留字段名以兼容已有 settings.json
+    tts_backend: str = Field("gradio", description="TTS 服务类型：gradio 或 api_v2")
+    gradio_server_url: str = Field("http://localhost:9872/", description="Gradio 或 api_v2 服务地址")
     # 新增：GPT-SoVITS 根目录与自动启动开关
     sovits_root_path: str = Field("", description="GPT-SoVITS 根目录（包含 runtime/python.exe 与 GPT_SoVITS 目录）")
-    autostart_sovits: bool = Field(True, description="启动程序后若 WebUI 未连接则自动启动 GPT-SoVITS")
+    autostart_sovits: bool = Field(True, description="启动程序后若 TTS 服务未连接则自动启动 GPT-SoVITS")
     sovits_model: str = Field("", description="SoVITS 模型权重")
     gpt_model: str = Field("", description="GPT 模型权重")
     sample_steps: str = Field("32", description="采样步数")
