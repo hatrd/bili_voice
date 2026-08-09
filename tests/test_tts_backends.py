@@ -1,28 +1,26 @@
 import asyncio
+import io
 import json
+import math
+import struct
 import threading
 import unittest
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from backend.models import Settings
 from backend.tts_service import (
     APIv2Client,
-    TTSBackend,
+    _adjust_wav_volume,
     _build_api_v2_payload,
     check_tts_backend,
-    normalize_tts_backend,
 )
 
 
-class _BackendHandler(BaseHTTPRequestHandler):
-    backend = TTSBackend.GRADIO
-
+class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.backend == TTSBackend.GRADIO and self.path == "/config":
-            self._json_response({"dependencies": [], "components": []})
-            return
-        if self.backend == TTSBackend.API_V2 and self.path == "/openapi.json":
+        if self.path == "/openapi.json":
             self._json_response({"paths": {"/tts": {"post": {}}}})
             return
         self.send_response(404)
@@ -73,11 +71,7 @@ class _APIClientHandler(BaseHTTPRequestHandler):
         return
 
 
-class TTSBackendTests(unittest.TestCase):
-    def test_backend_is_selected_explicitly(self):
-        self.assertEqual(normalize_tts_backend("gradio"), TTSBackend.GRADIO)
-        self.assertEqual(normalize_tts_backend("api_v2"), TTSBackend.API_V2)
-
+class APIv2Tests(unittest.TestCase):
     def test_api_v2_payload_maps_ui_values(self):
         settings = Settings(
             text_lang="中文",
@@ -105,15 +99,23 @@ class TTSBackendTests(unittest.TestCase):
         self.assertEqual(payload["prompt_text"], "")
         self.assertEqual(payload["seed"], 42)
 
-    def test_checks_explicit_gradio_service(self):
-        self._check_server(TTSBackend.GRADIO, TTSBackend.GRADIO)
+    def test_migrates_legacy_api_v2_url(self):
+        settings = Settings(tts_backend="api_v2", gradio_server_url="http://127.0.0.1:9999/")
+        self.assertEqual(settings.api_v2_url, "http://127.0.0.1:9999/")
+        self.assertNotIn("tts_backend", settings.model_dump())
+        self.assertNotIn("gradio_server_url", settings.model_dump())
 
-    def test_checks_explicit_api_v2_service(self):
-        self._check_server(TTSBackend.API_V2, TTSBackend.API_V2)
-
-    def test_explicit_backend_does_not_fall_back(self):
-        with self.assertRaises(RuntimeError):
-            self._check_server(TTSBackend.GRADIO, TTSBackend.API_V2)
+    def test_checks_api_v2_service(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            asyncio.run(check_tts_backend(url, timeout_seconds=2))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_api_v2_client_selects_models_and_returns_audio(self):
         handler = type("APIClientHandler", (_APIClientHandler,), {"requests": []})
@@ -141,18 +143,21 @@ class TTSBackendTests(unittest.TestCase):
         self.assertEqual(handler.requests[1][1]["weights_path"], ["voice model.ckpt"])
         self.assertEqual(handler.requests[2][1]["text"], "测试")
 
-    def _check_server(self, served_backend, configured_backend):
-        handler = type("BackendHandler", (_BackendHandler,), {"backend": served_backend})
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            url = f"http://127.0.0.1:{server.server_port}"
-            asyncio.run(check_tts_backend(url, configured_backend, timeout_seconds=2))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
+    def test_adjusts_pcm_wav_volume_without_ffmpeg(self):
+        source = io.BytesIO()
+        samples = (1000, -1000, 2000, -2000)
+        with wave.open(source, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(struct.pack("<4h", *samples))
+
+        adjusted = _adjust_wav_volume(source.getvalue(), -6.0206)
+        with wave.open(io.BytesIO(adjusted), "rb") as reader:
+            actual = struct.unpack("<4h", reader.readframes(4))
+
+        for value, expected in zip(actual, samples):
+            self.assertLessEqual(abs(value - math.trunc(expected * 0.5)), 1)
 
 
 if __name__ == "__main__":

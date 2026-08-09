@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional
 import asyncio
 import os
-import subprocess
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File
 from fastapi.responses import JSONResponse, Response
@@ -44,10 +43,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_OUT = ROOT_DIR / "frontend" / "out"
 
 
-def _resolve_sovits_start_script(root_path: Path, backend: str) -> Path:
-    if tts_service.normalize_tts_backend(backend) == tts_service.TTSBackend.API_V2:
-        return root_path / "api_v2.py"
-    return root_path / "GPT_SoVITS" / "inference_webui_fast.py"
+def _resolve_sovits_start_script(root_path: Path) -> Path:
+    return root_path / "api_v2.py"
 
 
 app = FastAPI(title="Bilibili Danmaku Desktop Backend", version="0.1.0")
@@ -111,7 +108,7 @@ async def _startup():
                 if root:
                     root_path = Path(root).resolve()
                     py = root_path / "runtime" / "python.exe"
-                    script = _resolve_sovits_start_script(root_path, s.tts_backend)
+                    script = _resolve_sovits_start_script(root_path)
                     if py.exists() and script.exists():
                         # Launch external process via proc_manager; it will be tied to parent lifetime
                         proc_manager.start_process([str(py), str(script)], cwd=str(root_path))
@@ -153,26 +150,18 @@ def api_save_last_room_id(last_room_id: int = Body(embed=True)):
     return CommonResponse(ok=True, message="last_room_id saved", data={"last_room_id": s.last_room_id})
 
 
-# ========== TTS (Gradio / api_v2) ==========
+# ========== TTS (GPT-SoVITS api_v2) ==========
 @app.get("/api/tts/health")
-async def api_tts_health(
-    url: str | None = Query(default=None),
-    backend: str | None = Query(default=None),
-):
+async def api_tts_health(url: str | None = Query(default=None)):
     """
-    Check connectivity to GPT-SoVITS Gradio or api_v2 at current settings or override ?url=.
+    Check connectivity to GPT-SoVITS api_v2 at current settings or override ?url=.
     """
     try:
         s = load_settings()
         if url:
             # allow testing unsaved input from UI
             try:
-                s.gradio_server_url = url  # type: ignore
-            except Exception:
-                pass
-        if backend:
-            try:
-                s.tts_backend = backend  # type: ignore
+                s.api_v2_url = url  # type: ignore
             except Exception:
                 pass
         result = await tts_service.tts_health(s)

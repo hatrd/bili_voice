@@ -30,9 +30,8 @@ export type Settings = {
   tts_max_queue: number;
   tts_voice?: string | null; // 语音名称
 
-  // GPT-SoVITS 服务配置；字段名为兼容旧配置而保留
-  tts_backend: "gradio" | "api_v2";
-  gradio_server_url: string; // Gradio 或 api_v2 服务地址
+  // GPT-SoVITS api_v2 服务配置
+  api_v2_url: string;
   // 新增：GPT-SoVITS 根目录与自动启动
   sovits_root_path: string;
   autostart_sovits: boolean;
@@ -106,7 +105,7 @@ export type TtsHealth = {
   ok: boolean;
   ready: boolean;
   url?: string;
-  backend?: "gradio" | "api_v2";
+  backend?: "api_v2";
   message?: string;
 };
 
@@ -208,11 +207,10 @@ export const api = {
 
   logout: () => request<CommonResponse>("/api/logout", { method: "POST" }),
 
-  // TTS/Gradio
-  ttsHealth: (url?: string, backend?: "gradio" | "api_v2") => {
+  // GPT-SoVITS api_v2
+  ttsHealth: (url?: string) => {
     const params = new URLSearchParams();
     if (url) params.set("url", url);
-    if (backend) params.set("backend", backend);
     const query = params.toString();
     return request<TtsHealth>(`/api/tts/health${query ? `?${query}` : ""}`);
   },
