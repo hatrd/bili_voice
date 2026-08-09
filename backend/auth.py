@@ -58,7 +58,9 @@ class AuthManager:
     async def start_qr(self) -> Tuple[str, str]:
         token, sess = await self._ensure_session()
         sess.method = LoginMethod.QR
-        sess.qr = QrCodeLogin(platform=QrCodeLoginChannel.WEB)
+        # The web channel currently reports DONE while returning no login
+        # cookies. The TV channel returns the cookies as structured data.
+        sess.qr = QrCodeLogin(platform=QrCodeLoginChannel.TV)
         await sess.qr.generate_qrcode()
         pic = sess.qr.get_qrcode_picture()  # Picture
         # Encode raw content bytes of Picture to base64
@@ -78,9 +80,9 @@ class AuthManager:
         state = await sess.qr.check_state()
         sess.qr_state = state
         if state == QrCodeLoginEvents.DONE:
-            sess.qr_done = True
             cred = sess.qr.get_credential()
             self._save_bili_credential(cred)
+            sess.qr_done = True
             sess.cookies_saved = True
         return state, sess.qr_done
 
@@ -183,6 +185,11 @@ class AuthManager:
             ac_time_value=cookies.get("ac_time_value"),
             buvid4=cookies.get("buvid4"),
         )
+        if not dto.is_valid():
+            raise RuntimeError(
+                "Bilibili reported QR login success but did not return "
+                "SESSDATA and bili_jct; please generate a new QR code"
+            )
         save_credential(dto)
 
 
