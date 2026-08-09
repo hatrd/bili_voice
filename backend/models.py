@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, Optional, List
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 class ReplacementRule(BaseModel):
@@ -46,11 +46,11 @@ class Settings(BaseModel):
     tts_max_queue: int = Field(50, description="最大语音队列长度")
     tts_voice: Optional[str] = Field(None, description="语音名称（浏览器语音合成器）")
 
-    # GPT-SoVITS WebUI 配置（参考 gpt-sovits-tts/config.py）
-    gradio_server_url: str = Field("http://localhost:9872/", description="WebUI 服务地址")
+    # GPT-SoVITS api_v2 服务配置
+    api_v2_url: str = Field("http://localhost:9880/", description="GPT-SoVITS api_v2 服务地址")
     # 新增：GPT-SoVITS 根目录与自动启动开关
     sovits_root_path: str = Field("", description="GPT-SoVITS 根目录（包含 runtime/python.exe 与 GPT_SoVITS 目录）")
-    autostart_sovits: bool = Field(True, description="启动程序后若 WebUI 未连接则自动启动 GPT-SoVITS")
+    autostart_sovits: bool = Field(True, description="启动程序后若 TTS 服务未连接则自动启动 GPT-SoVITS")
     sovits_model: str = Field("", description="SoVITS 模型权重")
     gpt_model: str = Field("", description="GPT 模型权重")
     sample_steps: str = Field("32", description="采样步数")
@@ -75,6 +75,20 @@ class Settings(BaseModel):
     max_tts_queue_size: int = Field(5, description="最大TTS队列长度（服务端）")
     # 有序替换规则：[{ key, value, match_case, whole_word, use_regex }]，上方优先
     replacement_rules: List[ReplacementRule] = Field(default_factory=list, description="有序替换规则 [{key,value,match_case,whole_word,use_regex}]，上方优先")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_api_v2_url(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("api_v2_url"):
+            return data
+        if str(data.get("tts_backend") or "").strip().lower() != "api_v2":
+            return data
+        legacy_url = str(data.get("gradio_server_url") or "").strip()
+        if not legacy_url:
+            return data
+        migrated = dict(data)
+        migrated["api_v2_url"] = legacy_url
+        return migrated
 
 
 class CredentialDTO(BaseModel):

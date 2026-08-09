@@ -32,13 +32,13 @@ export default function SettingsPage() {
     api.getSettings().then(setSettings).catch((e) => setMsg(e.message || String(e)));
   }, []);
 
-  // 自动检测 Gradio 连接状态：页面加载后、以及地址变更时
+  // 自动检测 TTS 服务连接状态：页面加载后、以及地址变更时
   useEffect(() => {
     if (!settings) return;
     (async () => {
       setChecking(true);
       try {
-        const h = await api.ttsHealth(settings.gradio_server_url);
+        const h = await api.ttsHealth(settings.api_v2_url);
         setHealth(h);
       } catch (e: any) {
         setHealth({ ok: false, ready: false, message: e?.message || String(e) });
@@ -46,7 +46,7 @@ export default function SettingsPage() {
         setChecking(false);
       }
     })();
-  }, [settings?.gradio_server_url]);
+  }, [settings?.api_v2_url]);
 
   const save = async () => {
     if (!settings) return;
@@ -77,7 +77,7 @@ export default function SettingsPage() {
   const checkHealth = async () => {
     setChecking(true);
     try {
-      const h = await api.ttsHealth(settings?.gradio_server_url);
+      const h = await api.ttsHealth(settings?.api_v2_url);
       setHealth(h);
     } catch (e: any) {
       setHealth({ ok: false, ready: false, message: e?.message || String(e) });
@@ -126,7 +126,7 @@ export default function SettingsPage() {
           <div className="hr" />
 
           <div style={{ fontWeight: 700 }}>语音播报设置</div>
-          <div className="small">通过 GPT-SoVITS WebUI 合成语音并在本机播放。</div>
+          <div className="small">通过 GPT-SoVITS api_v2 合成语音并在本机播放。</div>
 
           <div className="row">
             <label>启用AI语音播报</label>
@@ -172,24 +172,24 @@ export default function SettingsPage() {
           <div style={{ fontWeight: 700 }}>GPT-SoVITS 配置</div>
 
           <div className="row" style={{ alignItems: "center", gap: 8 }}>
-            <label>WebUI 服务地址</label>
+            <label>api_v2 服务地址</label>
             <input
               className="input"
-              value={settings.gradio_server_url}
-              onChange={(e) => setSettings({ ...settings, gradio_server_url: e.target.value })}
-              placeholder="http://localhost:9872/"
+              value={settings.api_v2_url}
+              onChange={(e) => setSettings({ ...settings, api_v2_url: e.target.value })}
+              placeholder="http://localhost:9880/"
               style={{ flex: 1, minWidth: 320 }}
             />
             <button className="button secondary" onClick={checkHealth} disabled={checking} style={{ whiteSpace: "nowrap" }}>
               {checking ? "检测中..." : "测试连接"}
             </button>
             <span className="badge" title={health?.message || ""} style={{ background: health?.ok && health?.ready ? "#204d26" : "#4d2020" }}>
-              {health ? (health.ok && health.ready ? "已连接" : "未连接") : "未知"}
+              {health ? (health.ok && health.ready ? "已连接 API v2" : "未连接") : "未知"}
             </span>
           </div>
 
           <div className="row">
-            <label>启动时自动尝试启动 WebUI</label>
+            <label>启动时自动尝试启动 TTS 服务</label>
             <Toggle
               label=""
               checked={!!(settings as any).autostart_sovits}

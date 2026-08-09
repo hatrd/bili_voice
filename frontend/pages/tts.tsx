@@ -139,7 +139,7 @@ export default function TTSPage() {
           </div>
 
           <div className="small" style={{ color: "#9fb0c0" }}>
-            提示：服务器端TTS需要已配置并可连接的 GPT-SoVITS WebUI；TTS需在“应用设置”中启用。
+            提示：服务器端TTS需要已配置并可连接的 GPT-SoVITS api_v2；TTS需在“应用设置”中启用。
           </div>
         </div>
       </section>
